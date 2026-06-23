@@ -6,123 +6,168 @@ from collections import deque
 
 app = FastAPI()
 
-# Keep only the last 30 metrics in memory (No database needed, zero disk usage)
 MAX_HISTORY = 30
 metrics_history = deque(maxlen=MAX_HISTORY)
+
+# อัปเดต Model ให้รับข้อมูลแบบใหม่
+class ProcessInfo(BaseModel):
+    name: str
+    cpu_usage: float
+    ram_mb: int
 
 class SystemMetrics(BaseModel):
     cpu_usage_avg: float
     cpu_cores: List[float]
     ram_used_mb: int
     ram_total_mb: int
+    uptime_seconds: int
+    net_rx_kbps: int
+    net_tx_kbps: int
+    top_processes: List[ProcessInfo]
 
 @app.post("/api/metrics")
 async def receive_metrics(metrics: SystemMetrics):
-    # Store incoming metrics into the in-memory history
+    # เก็บข้อมูลลง RAM ชั่วคราว
     metrics_history.append({
         "cpu": metrics.cpu_usage_avg,
         "ram": metrics.ram_used_mb,
-        "ram_total": metrics.ram_total_mb
+        "ram_total": metrics.ram_total_mb,
+        "uptime": metrics.uptime_seconds,
+        "net_rx": metrics.net_rx_kbps,
+        "net_tx": metrics.net_tx_kbps,
+        "top_processes": [{"name": p.name, "cpu": p.cpu_usage, "ram": p.ram_mb} for p in metrics.top_processes]
     })
     return {"status": "success"}
 
 @app.get("/api/metrics/history")
 async def get_metrics_history():
-    # Return the current history for the chart to consume
     return list(metrics_history)
 
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard():
-    # A single-page HTML Dashboard using Chart.js to poll data every 3 seconds
+    # อัปเกรดหน้า Dashboard ให้ดูเป็น Dashboard ของจริง
     html_content = """
     <!DOCTYPE html>
     <html>
     <head>
-        <title>TinyNode Monitor Dashboard</title>
+        <title>TinyNode Monitor</title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <style>
-            body { font-family: sans-serif; margin: 40px; background: #f5f5f5; color: #333; }
-            .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-            h1 { text-align: center; }
-            .status { display: flex; justify-content: space-around; margin-bottom: 20px; font-size: 1.2em; font-weight: bold; }
-            .chart-container { position: relative; height: 400px; width: 100%; }
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 20px; background: #eef2f5; color: #333; }
+            .container { max-width: 1000px; margin: 0 auto; }
+            h1 { text-align: center; color: #2c3e50; }
+            
+            /* จัด Layout กล่องข้อมูลด้านบน */
+            .grid { display: flex; gap: 20px; margin-bottom: 20px; }
+            .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); flex: 1; }
+            .card h3 { margin-top: 0; color: #7f8c8d; font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; }
+            .value { font-size: 1.4em; font-weight: bold; margin: 5px 0; color: #2c3e50; }
+            
+            /* รายชื่อโปรแกรม */
+            .process-list { list-style: none; padding: 0; margin: 0; }
+            .process-list li { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #eee; font-size: 0.9em; }
+            .process-list li:last-child { border-bottom: none; }
+            .proc-name { font-weight: bold; color: #e74c3c; }
+            
+            .chart-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); height: 400px; }
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🖥️ TinyNode Monitor</h1>
-            <div class="status">
-                <div id="current-cpu">CPU: --%</div>
-                <div id="current-ram">RAM: -- / -- MB</div>
+            
+            <div class="grid">
+                <div class="card">
+                    <h3>System Status</h3>
+                    <div class="value" id="current-cpu">CPU: --%</div>
+                    <div class="value" id="current-ram">RAM: -- / -- MB</div>
+                    <div style="margin-top: 10px; font-size: 0.85em; color: #7f8c8d;" id="current-uptime">Uptime: --</div>
+                </div>
+                
+                <div class="card">
+                    <h3>Network Traffic</h3>
+                    <div class="value" style="color: #27ae60;" id="net-rx">⬇️ -- KB/s</div>
+                    <div class="value" style="color: #2980b9;" id="net-tx">⬆️ -- KB/s</div>
+                </div>
+                
+                <div class="card" style="flex: 1.5;">
+                    <h3>Top Processes (CPU)</h3>
+                    <ul class="process-list" id="top-processes">
+                        <li>Loading data...</li>
+                    </ul>
+                </div>
             </div>
-            <div class="chart-container">
+
+            <div class="chart-card">
                 <canvas id="metricsChart"></canvas>
             </div>
         </div>
 
         <script>
-            const ctx = document.getElementById('metricsChart').getContext('2d');
+            // ฟังก์ชันแปลงวินาทีเป็น วัน/ชั่วโมง/นาที
+            function formatUptime(seconds) {
+                const d = Math.floor(seconds / (3600*24));
+                const h = Math.floor(seconds % (3600*24) / 3600);
+                const m = Math.floor(seconds % 3600 / 60);
+                return `${d} days, ${h} hrs, ${m} mins`;
+            }
 
-            // Initialize Chart.js with two datasets: CPU and RAM
+            const ctx = document.getElementById('metricsChart').getContext('2d');
             const metricsChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: [],
                     datasets: [
-                        {
-                            label: 'CPU Usage (%)',
-                            data: [],
-                            borderColor: '#ff6384',
-                            tension: 0.2,
-                            yAxisID: 'y-cpu'
-                        },
-                        {
-                            label: 'RAM Usage (MB)',
-                            data: [],
-                            borderColor: '#36a2eb',
-                            tension: 0.2,
-                            yAxisID: 'y-ram'
-                        }
+                        { label: 'CPU Usage (%)', data: [], borderColor: '#ff6384', backgroundColor: 'rgba(255, 99, 132, 0.1)', fill: true, tension: 0.4, yAxisID: 'y-cpu' },
+                        { label: 'RAM Usage (MB)', data: [], borderColor: '#36a2eb', backgroundColor: 'rgba(54, 162, 235, 0.1)', fill: true, tension: 0.4, yAxisID: 'y-ram' }
                     ]
                 },
                 options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
+                    responsive: true, maintainAspectRatio: false,
                     scales: {
-                        'y-cpu': { min: 0, max: 100, position: 'left', title: { display: true, text: 'CPU (%)' } },
-                        'y-ram': { position: 'right', title: { display: true, text: 'RAM (MB)' } }
-                    }
+                        'y-cpu': { min: 0, max: 100, position: 'left' },
+                        'y-ram': { position: 'right' }
+                    },
+                    animation: { duration: 0 } // ปิดอนิเมชั่นตอนลากกราฟจะได้ไม่กระตุก
                 }
             });
 
-            // Function to fetch data from the FastAPI backend and update the chart
             async function updateDashboard() {
                 try {
                     const response = await fetch('/api/metrics/history');
                     const data = await response.json();
-
                     if (data.length === 0) return;
 
-                    // Update textual status indicators using the latest data point
                     const latest = data[data.length - 1];
+                    
+                    // อัปเดตข้อความต่างๆ
                     document.getElementById('current-cpu').innerText = `CPU: ${latest.cpu.toFixed(1)}%`;
                     document.getElementById('current-ram').innerText = `RAM: ${latest.ram} / ${latest.ram_total} MB`;
+                    document.getElementById('current-uptime').innerText = `Uptime: ${formatUptime(latest.uptime)}`;
+                    
+                    document.getElementById('net-rx').innerText = `⬇️ Download: ${latest.net_rx} KB/s`;
+                    document.getElementById('net-tx').innerText = `⬆️ Upload: ${latest.net_tx} KB/s`;
 
-                    // Update chart scales and data arrays
+                    // อัปเดตรายชื่อโปรแกรม
+                    const procList = document.getElementById('top-processes');
+                    procList.innerHTML = latest.top_processes.map(p => 
+                        `<li>
+                            <span class="proc-name">${p.name}</span> 
+                            <span>${p.cpu.toFixed(1)}% CPU | ${p.ram} MB</span>
+                        </li>`
+                    ).join('');
+
+                    // อัปเดตกราฟ
                     metricsChart.options.scales['y-ram'].max = latest.ram_total;
-
-                    metricsChart.data.labels = data.map((_, index) => `${data.length - index}s ago`);
+                    metricsChart.data.labels = data.map((_, i) => `-${(data.length - 1 - i) * 5}s`);
                     metricsChart.data.datasets[0].data = data.map(item => item.cpu);
                     metricsChart.data.datasets[1].data = data.map(item => item.ram);
-
-                    metricsChart.update('none'); // Update smoothly without reset animations
-                } catch (error) {
-                    console.error("Error fetching metrics:", error);
-                }
+                    metricsChart.update();
+                    
+                } catch (error) { console.error("Error:", error); }
             }
 
-            // Poll the backend every 3 seconds
-            setInterval(updateDashboard, 3000);
+            setInterval(updateDashboard, 5000);
             updateDashboard();
         </script>
     </body>
