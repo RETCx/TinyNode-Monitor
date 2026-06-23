@@ -22,7 +22,7 @@ class ProcessInfo(BaseModel):
     cpu_usage: float
     ram_mb: int
 
-# 1. เพิ่ม Model ของฮาร์ดดิสก์
+# 1. Disk model
 class DiskInfo(BaseModel):
     name: str
     mount_point: str
@@ -38,7 +38,7 @@ class SystemMetrics(BaseModel):
     net_rx_kbps: int
     net_tx_kbps: int
     top_processes: List[ProcessInfo]
-    disks: List[DiskInfo] # 2. รับ List ของดิสก์
+    disks: List[DiskInfo] # 2. Receive a list of disks
 
 @app.post("/api/metrics")
 async def receive_metrics(metrics: SystemMetrics):
@@ -52,7 +52,7 @@ async def receive_metrics(metrics: SystemMetrics):
         "top_processes": [{"name": p.name, "cpu": p.cpu_usage, "ram": p.ram_mb} for p in metrics.top_processes],
         "disks": [{"name": d.name, "mount": d.mount_point, "total": d.total_gb, "used": d.used_gb} for d in metrics.disks]
     })
-    print(f"📊 Received metrics: CPU={metrics.cpu_usage_avg:.1f}%, RAM={metrics.ram_used_mb}/{metrics.ram_total_mb}MB, Net: RX={metrics.net_rx_kbps}KB/s TX={metrics.net_tx_kbps}KB/s")
+    print(f"Received metrics: CPU={metrics.cpu_usage_avg:.1f}%, RAM={metrics.ram_used_mb}/{metrics.ram_total_mb}MB, Net: RX={metrics.net_rx_kbps}KB/s TX={metrics.net_tx_kbps}KB/s")
     return {"status": "success"}
 
 @app.get("/api/metrics/history")
