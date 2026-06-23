@@ -1,0 +1,12 @@
+# Rust
+/target
+
+/agent/target/
+**/*.rs.bk
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+/server/venv/
+.env
